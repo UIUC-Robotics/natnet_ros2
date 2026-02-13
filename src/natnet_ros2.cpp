@@ -235,7 +235,7 @@ bool NatNetNode::connect()
             RCLCPP_INFO(get_logger(),"Analog Samples Per Mocap Frame : %d", *((int*)pResult));
         }
         else
-            RCLCPP_ERROR(get_logger(),"Error getting Analog frame rate.");
+            RCLCPP_WARN(get_logger(),"Did not recieve Analog frame rate.");
     }
 
     return true;

@@ -7,10 +7,12 @@ from launch_ros.actions import LifecycleNode
 from launch.actions import OpaqueFunction
 from launch.actions import DeclareLaunchArgument
 from launch.actions import GroupAction
+from launch.actions import RegisterEventHandler
 from launch.substitutions import LaunchConfiguration
 import lifecycle_msgs.msg
 from launch.actions import EmitEvent
 from launch_ros.events.lifecycle import ChangeState
+from launch_ros.event_handlers import OnStateTransition
 from launch.events.matchers import matches_action
 
 def node_fn(context,*args, **kwargs):
@@ -73,23 +75,36 @@ def node_fn(context,*args, **kwargs):
         #        "--disable-external-lib-logs"]
     )
     ld.append(node)
-    
-    driver_configure = EmitEvent(
-        event=ChangeState(
-            lifecycle_node_matcher=matches_action(node),
-           transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
-        )
-    )
-    ld.append(driver_configure)
-    if activate.perform(context):
-        driver_activate = EmitEvent(
-        event=ChangeState(
-            lifecycle_node_matcher=matches_action(node),
-            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+
+    # Request CONFIGURE immediately (valid from initial unconfigured state).
+    ld.append(
+        EmitEvent(
+            event=ChangeState(
+                lifecycle_node_matcher=matches_action(node),
+                transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
             )
         )
-        ld.append(driver_activate)
-    
+    )
+
+    # Emit ACTIVATE only after node reaches inactive (i.e. after configure completes).
+    # Sending ACTIVATE immediately would fail: transition 3 is invalid from unconfigured.
+    if activate.perform(context):
+        ld.append(
+            RegisterEventHandler(
+                OnStateTransition(
+                    target_lifecycle_node=node,
+                    goal_state='inactive',
+                    entities=[
+                        EmitEvent(
+                            event=ChangeState(
+                                lifecycle_node_matcher=matches_action(node),
+                                transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+                            )
+                        ),
+                    ],
+                )
+            )
+        )
 
     return ld
 
@@ -97,15 +112,15 @@ def node_fn(context,*args, **kwargs):
 def generate_launch_description():
 
     return  LaunchDescription([
-        DeclareLaunchArgument('serverIP', default_value="192.168.0.100"),
-        DeclareLaunchArgument('clientIP', default_value="192.168.0.103"),
+        DeclareLaunchArgument('serverIP', default_value="192.168.1.114"),
+        DeclareLaunchArgument('clientIP', default_value="192.168.1.37"),
         DeclareLaunchArgument('serverType', default_value="multicast"), # multicast/unicast
         DeclareLaunchArgument('multicastAddress', default_value="239.255.42.99"),
         DeclareLaunchArgument('serverCommandPort', default_value="1510"),
         DeclareLaunchArgument('serverDataPort', default_value="1511"),
         DeclareLaunchArgument('global_frame', default_value="world"),
         DeclareLaunchArgument('remove_latency',default_value="false"),
-        DeclareLaunchArgument('pub_rigid_body', default_value="false"),
+        DeclareLaunchArgument('pub_rigid_body', default_value="true"),
         DeclareLaunchArgument('pub_rigid_body_marker', default_value="False"),
         DeclareLaunchArgument('pub_individual_marker', default_value="False"),
         DeclareLaunchArgument('pub_pointcloud', default_value="False"),
@@ -114,7 +129,7 @@ def generate_launch_description():
         DeclareLaunchArgument('log_latencies', default_value="False"),
         DeclareLaunchArgument('conf_file', default_value="initiate.yaml"),
         DeclareLaunchArgument('node_name', default_value="natnet_ros"),
-        DeclareLaunchArgument('activate', default_value="false"),
+        DeclareLaunchArgument('activate', default_value="true"),
         DeclareLaunchArgument('immt', default_value="PoseStamped",description="publish type of individual markers PoseStampted or PointStamped"),
         OpaqueFunction(function=node_fn)  
         ])
