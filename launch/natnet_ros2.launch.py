@@ -35,6 +35,8 @@ def node_fn(context,*args, **kwargs):
     node_name = LaunchConfiguration('node_name')
     activate = LaunchConfiguration('activate')
     immt = LaunchConfiguration('immt')
+    use_kalman_filter = LaunchConfiguration('use_kalman_filter')
+    odom_max_accel = LaunchConfiguration('odom_max_accel')
 
     params = [
             {"serverIP": serverIP}, 
@@ -53,6 +55,8 @@ def node_fn(context,*args, **kwargs):
             {"log_frames": log_frames},
             {"log_latencies": log_latencies},
             {"individual_marker_msg_type" : immt},
+            {"use_kalman_filter": use_kalman_filter},
+            {"odom_max_accel": odom_max_accel},
         ]
     conf_file_path = None
     if pub_individual_marker.perform(context):
@@ -112,8 +116,8 @@ def node_fn(context,*args, **kwargs):
 def generate_launch_description():
 
     return  LaunchDescription([
-        DeclareLaunchArgument('serverIP', default_value="192.168.1.114"),
-        DeclareLaunchArgument('clientIP', default_value="192.168.1.37"),
+        DeclareLaunchArgument('serverIP', default_value="192.168.1.114"), # IRL Server IP
+        DeclareLaunchArgument('clientIP', default_value="192.168.1.36"), # update to your client IP
         DeclareLaunchArgument('serverType', default_value="multicast"), # multicast/unicast
         DeclareLaunchArgument('multicastAddress', default_value="239.255.42.99"),
         DeclareLaunchArgument('serverCommandPort', default_value="1510"),
@@ -130,6 +134,8 @@ def generate_launch_description():
         DeclareLaunchArgument('conf_file', default_value="initiate.yaml"),
         DeclareLaunchArgument('node_name', default_value="natnet_ros"),
         DeclareLaunchArgument('activate', default_value="true"),
-        DeclareLaunchArgument('immt', default_value="PoseStamped",description="publish type of individual markers PoseStampted or PointStamped"),
+        DeclareLaunchArgument('immt', default_value="PoseStamped", description="publish type of individual markers PoseStamped or PointStamped"),
+        DeclareLaunchArgument('use_kalman_filter', default_value="true", description="use constant-velocity Kalman filter for odometry"),
+        DeclareLaunchArgument('odom_max_accel', default_value="10.0", description="max acceleration (m/s^2) for Kalman process noise"),
         OpaqueFunction(function=node_fn)  
         ])

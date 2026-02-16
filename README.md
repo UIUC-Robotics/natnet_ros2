@@ -72,9 +72,9 @@ ros2 launch natnet_ros2 gui_natnet_ros2.launch.py
 ![alt text](https://github.com/L2S-lab/natnet_ros2/blob/main/img/ui-1.png)
 
 
-#### Difficult way
+Using Non gui approach defaults to IRL lab config.
+You have to update your ip address in [natnet_ros2.launch.py](./launch/natnet_ros2.launch.py)
 
-Using Non gui approach
 `ros2 launch natnet_ros2 natnet_ros2.launch.py`
 
 ##### Understanding the launch file

@@ -17,6 +17,8 @@
 
 #include "natnet_ros2/natnet_ros2.hpp"
 #include "natnet_ros2/nn_filter.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include <Eigen/Geometry>
 
 using CallbackReturnT =
   rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
@@ -41,6 +43,8 @@ NatNetNode::NatNetNode(rclcpp::NodeOptions& node_options) : LifecycleNode("natne
     declare_parameter<std::string>("multicastAddress", "239.255.42.99");
     declare_parameter<int>("serverCommandPort", 1510);
     declare_parameter<int>("serverDataPort", 1511);
+    declare_parameter<bool>("use_kalman_filter", true);
+    declare_parameter<double>("odom_max_accel", 10.0);
     tfBroadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
 }
@@ -66,6 +70,8 @@ void NatNetNode::get_node_params()
     immt = get_parameter("individual_marker_msg_type").as_string();
     global_frame = get_parameter("global_frame").as_string();
     remove_latency = get_parameter("remove_latency").as_bool();
+    use_kalman_filter = get_parameter("use_kalman_filter").as_bool();
+    odom_max_accel = get_parameter("odom_max_accel").as_double();
     if (pub_individual_marker)
     {
         declare_parameter<std::vector<std::string>>("object_names", {});
@@ -112,8 +118,8 @@ void NatNetNode::get_conn_params()
         }
         else
         {
-            RCLCPP_WARN(get_logger(),"Failed to get server IP, using default 192.168.0.100");
-            serverIP = "192.168.0.100";
+            RCLCPP_WARN(get_logger(),"Failed to get server IP, using default 192.168.1.114");
+            serverIP = "192.168.1.114";
         }
 
         if (get_parameter("clientIP", clientIP))
@@ -221,11 +227,14 @@ bool NatNetNode::connect()
         ret = g_pClient->SendMessageAndWait("FrameRate", &pResult, &nBytes);
         if (ret == ErrorCode_OK)
         {
-            float fRate = *((float*)pResult);
-            RCLCPP_INFO(get_logger(),"Mocap Framerate : %3.2f", fRate);
+            mocap_frame_rate_ = *((float*)pResult);
+            RCLCPP_INFO(get_logger(),"Mocap Framerate : %3.2f", mocap_frame_rate_);
         }
         else
-            RCLCPP_ERROR(get_logger(),"Error getting frame rate.");
+        {
+            RCLCPP_ERROR(get_logger(),"Error getting frame rate. Setting to default 200.0f");
+            mocap_frame_rate_ = 200.0f;
+        }
 
         // get # of analog samples per mocap frame of data
         ret = g_pClient->SendMessageAndWait("AnalogSamplesPerMocapFrame", &pResult, &nBytes);
@@ -289,6 +298,7 @@ void NatNetNode::get_info()
                 {
                     ListRigidBodies[pRB->ID] = body_name;
                     RigidbodyPub[pRB->szName] = create_publisher<geometry_msgs::msg::PoseStamped>(body_name+"/pose", rclcpp::QoS(1000));
+                    RigidbodyOdomPub[pRB->szName] = create_publisher<nav_msgs::msg::Odometry>(body_name+"/odom", rclcpp::QoS(1000));
                 }
                 if ( pRB->MarkerPositions != NULL && pRB->MarkerRequiredLabels != NULL )
                 {
@@ -417,9 +427,15 @@ void NatNetNode::process_frame(sFrameOfMocapData* data)
 
 void NatNetNode::process_rigid_body(sRigidBodyData &data)
 {
+    rclcpp::Time stamp = remove_latency ? this->get_clock()->now() - frame_delay : this->get_clock()->now();
+    const std::string& body_name = ListRigidBodies[data.ID];
+
+    Eigen::Vector3d position(data.x, data.y, data.z);
+    Eigen::Quaterniond orientation(data.qw, data.qx, data.qy, data.qz);
+
     geometry_msgs::msg::PoseStamped msgRigidBodyPose;
     msgRigidBodyPose.header.frame_id = global_frame;
-    msgRigidBodyPose.header.stamp = remove_latency ? this->get_clock()->now()-frame_delay : this->get_clock()->now();
+    msgRigidBodyPose.header.stamp = stamp;
     msgRigidBodyPose.pose.position.x = data.x;
     msgRigidBodyPose.pose.position.y = data.y;
     msgRigidBodyPose.pose.position.z = data.z;
@@ -427,12 +443,100 @@ void NatNetNode::process_rigid_body(sRigidBodyData &data)
     msgRigidBodyPose.pose.orientation.y = data.qy;
     msgRigidBodyPose.pose.orientation.z = data.qz;
     msgRigidBodyPose.pose.orientation.w = data.qw;
-    RigidbodyPub[ListRigidBodies[data.ID]]->publish(msgRigidBodyPose);
-    // creating tf frame to visualize in the rviz
+    RigidbodyPub[body_name]->publish(msgRigidBodyPose);
+
+    // Odometry with constant-velocity Kalman filter
+    nav_msgs::msg::Odometry odom_msg;
+    odom_msg.header.stamp = stamp;
+    odom_msg.header.frame_id = global_frame;
+    odom_msg.child_frame_id = body_name;
+    odom_msg.pose.pose = msgRigidBodyPose.pose;
+
+    if (use_kalman_filter)
+    {
+        auto kf_it = kalman_filters.find(body_name);
+        if (kf_it == kalman_filters.end())
+        {
+            double dt_expected = 1.0 / static_cast<double>(mocap_frame_rate_);
+            mocap_kalman::KalmanFilter::Matrix12d process_noise;
+            mocap_kalman::KalmanFilter::Matrix6d measurement_noise;
+            process_noise.setZero();
+            process_noise.topLeftCorner<6, 6>() = 0.5 * Eigen::Matrix<double, 6, 6>::Identity() * dt_expected * dt_expected * odom_max_accel;
+            process_noise.bottomRightCorner<6, 6>() = Eigen::Matrix<double, 6, 6>::Identity() * dt_expected * odom_max_accel;
+            process_noise = process_noise * process_noise;  // make covariance (diagonal squared)
+            measurement_noise = Eigen::Matrix<double, 6, 6>::Identity() * 1e-3;
+            measurement_noise = measurement_noise * measurement_noise;
+
+            auto kf = std::make_shared<mocap_kalman::KalmanFilter>();
+            kf->init(process_noise, measurement_noise, static_cast<int>(mocap_frame_rate_));
+            kalman_filters[body_name] = kf;
+            kf_it = kalman_filters.find(body_name);
+            RCLCPP_INFO(get_logger(), "Created Kalman filter for '%s'", body_name.c_str());
+        }
+
+        auto& kf = kf_it->second;
+        double current_time = stamp.seconds();
+
+        if (!kf->isReady())
+        {
+            kf->prepareInitialCondition(current_time, orientation, position);
+            odom_msg.twist.twist.linear.x = 0.0;
+            odom_msg.twist.twist.linear.y = 0.0;
+            odom_msg.twist.twist.linear.z = 0.0;
+            odom_msg.twist.twist.angular.x = 0.0;
+            odom_msg.twist.twist.angular.y = 0.0;
+            odom_msg.twist.twist.angular.z = 0.0;
+        }
+        else
+        {
+            kf->prediction(current_time);
+            kf->update(orientation, position);
+
+            odom_msg.pose.pose.position.x = kf->position.x();
+            odom_msg.pose.pose.position.y = kf->position.y();
+            odom_msg.pose.pose.position.z = kf->position.z();
+            odom_msg.pose.pose.orientation.w = kf->attitude.w();
+            odom_msg.pose.pose.orientation.x = kf->attitude.x();
+            odom_msg.pose.pose.orientation.y = kf->attitude.y();
+            odom_msg.pose.pose.orientation.z = kf->attitude.z();
+
+            odom_msg.twist.twist.linear.x = kf->linear_vel.x();
+            odom_msg.twist.twist.linear.y = kf->linear_vel.y();
+            odom_msg.twist.twist.linear.z = kf->linear_vel.z();
+            odom_msg.twist.twist.angular.x = kf->angular_vel.x();
+            odom_msg.twist.twist.angular.y = kf->angular_vel.y();
+            odom_msg.twist.twist.angular.z = kf->angular_vel.z();
+
+            Eigen::Map<Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> pose_cov(odom_msg.pose.covariance.data());
+            pose_cov.topLeftCorner<3, 3>() = kf->state_cov.block<3, 3>(3, 3);
+            pose_cov.topRightCorner<3, 3>() = kf->state_cov.block<3, 3>(3, 0);
+            pose_cov.bottomLeftCorner<3, 3>() = kf->state_cov.block<3, 3>(0, 3);
+            pose_cov.bottomRightCorner<3, 3>() = kf->state_cov.block<3, 3>(0, 0);
+
+            Eigen::Map<Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> vel_cov(odom_msg.twist.covariance.data());
+            vel_cov.topLeftCorner<3, 3>() = kf->state_cov.block<3, 3>(9, 9);
+            vel_cov.topRightCorner<3, 3>() = kf->state_cov.block<3, 3>(9, 6);
+            vel_cov.bottomLeftCorner<3, 3>() = kf->state_cov.block<3, 3>(6, 9);
+            vel_cov.bottomRightCorner<3, 3>() = kf->state_cov.block<3, 3>(6, 6);
+        }
+    }
+    else
+    {
+        odom_msg.twist.twist.linear.x = 0.0;
+        odom_msg.twist.twist.linear.y = 0.0;
+        odom_msg.twist.twist.linear.z = 0.0;
+        odom_msg.twist.twist.angular.x = 0.0;
+        odom_msg.twist.twist.angular.y = 0.0;
+        odom_msg.twist.twist.angular.z = 0.0;
+    }
+
+    RigidbodyOdomPub[body_name]->publish(odom_msg);
+
+    // TF frame for visualization
     geometry_msgs::msg::TransformStamped msgTFRigidBodies;
-    msgTFRigidBodies.header.stamp = remove_latency ? this->get_clock()->now()-frame_delay : this->get_clock()->now();
+    msgTFRigidBodies.header.stamp = stamp;
     msgTFRigidBodies.header.frame_id = global_frame;
-    msgTFRigidBodies.child_frame_id = ListRigidBodies[data.ID];
+    msgTFRigidBodies.child_frame_id = body_name;
     msgTFRigidBodies.transform.translation.x = data.x;
     msgTFRigidBodies.transform.translation.y = data.y;
     msgTFRigidBodies.transform.translation.z = data.z;
@@ -523,6 +627,8 @@ void NatNetNode::del_info()
     frame_number = 0;
     ListRigidBodies.clear();
     RigidbodyPub.clear();
+    RigidbodyOdomPub.clear();
+    kalman_filters.clear();
     RigidbodyMarkerPub.clear();
     IndividualMarkerPosePub.clear();
     IndividualMarkerPointPub.clear();
@@ -545,6 +651,10 @@ CallbackReturnT NatNetNode::on_activate(const rclcpp_lifecycle::State & state)
     if(pub_rigid_body)
     {
         for(auto const& i : RigidbodyPub)
+        {
+            i.second->on_activate();
+        }
+        for(auto const& i : RigidbodyOdomPub)
         {
             i.second->on_activate();
         }

@@ -12,8 +12,11 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(eigen3_cmake_module REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(ament_cmake_auto REQUIRED)
 find_package(ament_cmake_python REQUIRED)
@@ -27,6 +30,7 @@ set(dependencies
   tf2
   tf2_ros
   geometry_msgs
+  nav_msgs
   sensor_msgs
   std_msgs
 )
@@ -58,6 +62,7 @@ set(my_include_directories
   include
   ${CMAKE_CURRENT_BINARY_DIR}/include
   ${NATNET_SDK_DIR}/include
+  ${EIGEN3_INCLUDE_DIRS}
 )
 
 include_directories(
@@ -66,7 +71,9 @@ include_directories(
 )
 
 add_executable(natnet_ros2_node
-  src/natnet_ros2.cpp src/nn_filter.cpp
+  src/natnet_ros2.cpp
+  src/nn_filter.cpp
+  src/kalman_filter.cpp
 )
 
 ament_target_dependencies(natnet_ros2_node ${dependencies} rosidl_default_runtime)

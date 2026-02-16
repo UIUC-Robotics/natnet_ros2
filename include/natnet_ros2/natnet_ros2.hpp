@@ -30,6 +30,10 @@
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "sensor_msgs/msg/point_cloud.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+
+#include "mocap_kalman/KalmanFilter.h"
+#include <Eigen/Geometry>
 
 #include "rclcpp/time.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -111,7 +115,9 @@ private:
     std::string global_frame;
 
     bool nearest_nbr = true;
-    bool kalman = false; // Yet to implement
+    bool use_kalman_filter = true;
+    double odom_max_accel = 10.0;
+    float mocap_frame_rate_ = 200.0f;
     bool individual_error = false;
     float E=0.04, E_x=0.01, E_y=0.01, E_z=0.01;
     float error_amp = 1.0;
@@ -126,6 +132,8 @@ private:
 
     std::map<int32_t,std::string> ListRigidBodies; 
     std::map<std::string, rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>::SharedPtr> RigidbodyPub;
+    std::map<std::string, rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>::SharedPtr> RigidbodyOdomPub;
+    std::map<std::string, std::shared_ptr<mocap_kalman::KalmanFilter>> kalman_filters;
     std::map<std::string, rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>::SharedPtr> RigidbodyMarkerPub;
     std::map<std::string, rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>::SharedPtr> IndividualMarkerPosePub;
     std::map<std::string, rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>::SharedPtr> IndividualMarkerPointPub;
